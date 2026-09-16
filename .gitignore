@@ -1,0 +1,11 @@
+# Cache de Python
+__pycache__/
+*.pyc
+
+# Entornos virtuales
+.venv/
+venv/
+
+# Resultados generados al ejecutar.
+# Los ejemplos que si se publican viven en ejemplos/
+/*.xlsx
