@@ -27,7 +27,7 @@ import pandas as pd
 SECTORES = {
     "dentistas":    [("amenity", "dentist"), ("healthcare", "dentist")],
     "peluquerias":  [("shop", "hairdresser")],
-    "talleres":     [("shop", "car_repair")],
+    "talleres":     [("shop", "car_repair"), ("shop", "tyres")],
     "veterinarios": [("amenity", "veterinary")],
     "gimnasios":    [("leisure", "fitness_centre")],
     "restaurantes": [("amenity", "restaurant")],
@@ -45,6 +45,16 @@ SECTOR_POR_DEFECTO = "dentistas"
 # "Exportar", y copiar los cuatro valores del recuadro.
 CIUDADES = {
     "madrid":     (40.418, -3.720, 40.455, -3.675),
+
+    # Distritos de Madrid. El centro tiene pocos talleres y muchas clinicas;
+    # para sectores de barrio (talleres, peluquerias) rinden mas estos.
+    "carabanchel":  (40.370, -3.755, 40.400, -3.710),
+    "usera":        (40.370, -3.720, 40.395, -3.690),
+    "villaverde":   (40.335, -3.710, 40.365, -3.670),
+    "vallecas":     (40.375, -3.680, 40.405, -3.640),
+    "tetuan":       (40.455, -3.710, 40.480, -3.680),
+    "ciudadlineal": (40.430, -3.665, 40.465, -3.630),
+
     "barcelona":  (41.372, 2.142, 41.410, 2.198),
     "valencia":   (39.457, -0.393, 39.487, -0.355),
     "sevilla":    (37.372, -6.008, 37.404, -5.975),
@@ -103,8 +113,12 @@ def cuadricula(zona, paso):
 def pedir_trozo(trozo, etiquetas):
     """Descarga un cuadradito. Devuelve (elementos, ok)."""
     s, o, n, e = trozo
-    lineas = "\n  ".join(f'node["{k}"="{v}"]({s},{o},{n},{e});' for k, v in etiquetas)
-    consulta = f"[out:json][timeout:15];\n(\n  {lineas}\n);\nout tags;"
+    # nwr = nodes + ways + relations. Un negocio pequeño suele estar mapeado
+    # como un punto (node), pero uno que ocupa una nave o un local entero esta
+    # dibujado como un poligono (way). Pidiendo solo nodes se pierden esos.
+    lineas = "\n  ".join(f'nwr["{k}"="{v}"]({s},{o},{n},{e});' for k, v in etiquetas)
+    # "center" añade un lat/lon representativo a los poligonos.
+    consulta = f"[out:json][timeout:25];\n(\n  {lineas}\n);\nout tags center;"
 
     for url in SERVIDORES_OSM:
         try:
@@ -143,6 +157,7 @@ def a_tabla(elementos):
     for el in elementos:
         t = el.get("tags", {})
         filas.append({
+            "tipo":     el.get("type"),      # node / way / relation
             "nombre":   t.get("name"),
             "web":      t.get("website") or t.get("contact:website"),
             "telefono": t.get("phone") or t.get("contact:phone"),
@@ -263,7 +278,8 @@ def main():
         return
 
     df = a_tabla(elementos)
-    df = df.dropna(subset=["nombre"]).drop_duplicates(subset=["osm_id"])
+    # Un node y un way pueden compartir numero de id: hay que mirar los dos campos.
+    df = df.dropna(subset=["nombre"]).drop_duplicates(subset=["tipo", "osm_id"])
     df = df.reset_index(drop=True)
     print(f"\n{len(df)} negocios con nombre. Comprobando sus webs...\n")
 

@@ -9,3 +9,11 @@ venv/
 # Resultados generados al ejecutar.
 # Los ejemplos que si se publican viven en ejemplos/
 /*.xlsx
+
+# Datos de origen: el censo del Ayuntamiento son 125 MB y GitHub rechaza
+# cualquier fichero de mas de 100. Se descarga de datos.madrid.es, no se versiona.
+*.csv
+!ejemplos/*.csv
+
+# Maquetas enviadas a negocios reales: material comercial, no parte del proyecto.
+propuestas/
