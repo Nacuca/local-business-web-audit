@@ -1,168 +1,231 @@
-# Analizador de negocios locales
+# Local Business Digital Presence Audit
 
-Herramienta en Python que analiza la presencia digital de los negocios de un
-sector y una ciudad: los localiza en OpenStreetMap, comprueba el estado real de
-su página web y devuelve un Excel priorizado.
+Python tooling that finds local businesses in Spanish cities and measures the real
+state of their online presence — whether they have a website, whether it actually
+loads, and whether it works on a phone.
 
-```
-python analizador_negocios.py dentistas madrid
-```
-
----
-
-## El problema
-
-Un negocio local sin presencia digital decente pierde clientes sin enterarse: no
-aparece cuando alguien lo busca, o su web está caída y nadie se lo ha dicho.
-
-Según el INE, solo el **37% de las microempresas españolas** tiene página web,
-frente al 84,5% de las empresas de diez o más empleados. El problema es real y
-está concentrado justo en los negocios más pequeños.
-
-Esta herramienta lo mide: dado un sector y una ciudad, dice qué negocios hay y
-en qué estado está la web de cada uno.
-
----
-
-## Qué hace
-
-1. **Descarga** los negocios del sector en la zona indicada desde OpenStreetMap,
-   troceando la consulta en una cuadrícula para no exceder los límites de la API.
-2. **Limpia** los resultados: extrae los campos útiles, descarta registros sin
-   nombre y elimina duplicados por identificador.
-3. **Comprueba** cada web probando varias formas de la dirección, y mide si
-   responde, si va por HTTPS, si está preparada para móvil y cuánto tarda.
-4. **Clasifica** cada negocio en una acción comercial, descartando cadenas y
-   franquicias.
-5. **Exporta** a Excel, ordenado por prioridad, avisando si la descarga quedó
-   incompleta.
-
----
-
-## Instalación
-
-Requiere Python 3.9 o superior.
+Built to answer a commercial question with data instead of guesswork: *which
+businesses in this district are losing customers because nobody can find them
+online?*
 
 ```bash
-git clone https://github.com/<tu-usuario>/analizador-negocios.git
-cd analizador-negocios
-pip install -r requirements.txt
+python filtrar_censo.py talleres carabanchel     # 369 car repair shops, from the city registry
+python analizador_negocios.py dentistas madrid   # 71 dental clinics, websites checked
+python buscar_en_censo.py "carlos daban" 24      # what is registered at this address?
 ```
 
 ---
 
-## Uso
+## The problem
 
-```bash
-# Sector y ciudad por defecto (dentistas en Madrid)
-python analizador_negocios.py
+A small business with a broken or missing website loses customers without ever
+finding out. Nobody tells the owner that their domain expired, or that their
+Google listing points at a dead link.
 
-# Otro sector
-python analizador_negocios.py peluquerias
-
-# Otro sector y otra ciudad
-python analizador_negocios.py talleres valencia
-
-# Ver las opciones disponibles
-python analizador_negocios.py --sectores
-python analizador_negocios.py --ciudades
-```
-
-**Sectores incluidos:** dentistas, peluquerías, talleres, veterinarios,
-gimnasios, restaurantes, inmobiliarias, fisios, abogados y academias.
-
-**Ciudades incluidas:** Madrid, Barcelona, Valencia, Sevilla, Zaragoza, Málaga,
-Bilbao, Murcia, Alicante, Valladolid y Granada.
-
-Añadir un sector nuevo es una entrada en el diccionario `SECTORES` con su
-etiqueta de OpenStreetMap. Para una ciudad nueva, basta con copiar las cuatro
-coordenadas del recuadro desde la pestaña *Exportar* de openstreetmap.org.
+The tooling measures this at district scale: given a sector and an area, it
+returns every business, the state of its website, and a priority ranking.
 
 ---
 
-## Resultado
+## What it does
 
-Genera `analisis_<sector>_<ciudad>.xlsx` con una fila por negocio:
+Three tools that share a pipeline: **find businesses → check their web presence →
+rank them → export a reviewable spreadsheet.**
+
+| Tool | Source | Purpose |
+|---|---|---|
+| `analizador_negocios.py` | OpenStreetMap (Overpass API) | Finds businesses by sector and city, probes each website, classifies the result |
+| `filtrar_censo.py` | Madrid City Council open data | Filters the official premises registry by sector, district and trading status |
+| `buscar_en_censo.py` | Madrid City Council open data | Looks up the registered name of whatever operates at a given address |
+
+Output is always an Excel file with one row per business, ranked by commercial
+priority, with blank columns for the manual verification step.
+
+---
+
+## Case study: picking the right data source
+
+The interesting engineering decision in this project was not the code — it was
+discovering that the original data source was unusable for the target sector, and
+measuring it rather than assuming it.
+
+The first version relied entirely on OpenStreetMap. For hairdressers in central
+Madrid it returned **213 businesses**. For dental clinics, **71**. For car repair
+shops in Carabanchel, a working-class district full of them, it returned **2** —
+and a different 2 on each run.
+
+Two separate causes, found by investigating rather than retrying:
+
+**1. The query only asked for nodes.** A small shop inside a building is mapped in
+OpenStreetMap as a point (`node`). A workshop occupying a whole industrial unit is
+usually drawn as a polygon (`way`). Querying `node[...]` made the script blind to
+every business large enough to have its own footprint — which is most car repair
+shops. Fixed by querying `nwr[...]` (nodes, ways and relations) with `out center`,
+so polygons arrive with a representative coordinate and the rest of the pipeline
+does not need to know the difference.
+
+**2. Coverage was genuinely absent.** Even after the fix, the count stayed in the
+low single digits. OpenStreetMap is volunteer-maintained, and volunteer mapping
+concentrates in city centres and on consumer-facing shopfronts.
+
+The conclusion was to change the source, not the sector. Madrid City Council
+publishes a daily-updated **registry of every licensed commercial premises in the
+city** — 225,667 rows, with trade name, address, district, economic activity and
+trading status. For the same query it returns **369 car repair shops in
+Carabanchel** instead of 2.
+
+| Sector / area | OpenStreetMap | City registry |
+|---|---|---|
+| Car repair, Carabanchel | 2 | 369 |
+
+The lesson generalises: before optimising a pipeline, verify that the source
+actually contains the population you are looking for.
+
+---
+
+## Data quality traps
+
+Real administrative data breaks in specific, repeatable ways. Three that cost real
+time on this project, and how they are handled now:
+
+**Encoding detection order matters.** The registry file is UTF-8. The loader
+originally tried `latin-1` first — and `latin-1` never fails, because it accepts any
+byte sequence. It silently swallowed a UTF-8 file and produced mojibake throughout
+(`OPAÑEL` → `OPAÃEL`). Strict encodings are now tried first, so a genuinely
+`latin-1` file raises `UnicodeDecodeError` and falls through to the permissive one.
+Rule of thumb: when detecting encodings, try the strict ones first and leave the
+forgiving ones as a last resort.
+
+**Fuzzy column matching needs to be specific.** The registry has 47 columns, several
+sharing a keyword: `id_situacion_local` (a numeric code) and `desc_situacion_local`
+(the text). Matching the first column containing `situacion` picked the numeric one,
+and searching it for the word "open" matched nothing — silently filtering out every
+result. Column lookup now requires the descriptive variant explicitly. The same bug
+appeared again with street names (`id_vial_acceso` vs `desc_vial_acceso`), producing
+addresses like `768000.0, 9.0`.
+
+**Filter by exclusion, not enumeration.** The trading-status filter originally
+required the value to contain "open". It now excludes values containing closed,
+deregistered or cancelled. If the council relabels the field tomorrow, the exclusion
+filter keeps working; the enumeration filter would have silently returned zero rows
+again.
+
+---
+
+## Verifying a "dead website" claim
+
+The most commercially useful output — *this business's website is down* — is also
+the easiest to get wrong, so it is cross-checked against independent evidence.
+
+An HTTP request failing is weak evidence: the site may block automated requests,
+or the network path may be filtered. **DNS resolution is much stronger.** If the
+domain does not resolve at all, the domain has expired or lost its DNS, and no
+browser anywhere will reach it.
+
+Applied to the nine dental clinics flagged as down, 7 of 9 domains failed to
+resolve — confirmed dead. The other two resolved, and were correctly identified as
+false positives.
+
+Two further checks turned out to be essential before acting on any result:
+
+- **Is the business still trading?** A dead domain often means a dead business.
+  One clinic flagged as a prime candidate was marked permanently closed.
+- **Has it simply moved?** Another had let its old domain lapse and rebuilt on a
+  new one. The registry data said "no website"; reality said "new website".
+
+`buscar_en_censo.py` exists because of a third case: a business trading under one
+name on its sign, another on its Google listing, and a third on its licence. The
+registry resolves which legal entity operates at an address.
+
+---
+
+## Output
+
+`analisis_<sector>_<city>.xlsx`, one row per business:
 
 | accion | nombre | telefono | estado | argumento |
 |---|---|---|---|---|
-| 1 - web caida | Clínica Ejemplo | +34 91 ... | no responde | Su web no carga por ninguna vía. Comprobado. |
-| 2 - verificar | Dental Ejemplo | +34 91 ... | sin web en OSM (verificar) | Posible sin web. Comprobar antes de contactar. |
-| 3 - web mejorable | Centro Ejemplo | +34 91 ... | ok | Su web no está adaptada a móvil, tarda 6.2s en cargar. |
-| 4 - web correcta | Ejemplo Dental | +34 91 ... | ok | Su web funciona correctamente. |
-| DESCARTAR | Cadena Ejemplo | +34 91 ... | ok | Cadena o franquicia: no deciden en el local. |
+| 1 - web caida | Example Clinic | +34 91 ... | no responde | Site does not load by any route. Verified. |
+| 2 - verificar | Example Dental | +34 91 ... | sin web en OSM | Possibly no website. Verify before contacting. |
+| 3 - web mejorable | Example Centre | +34 91 ... | ok | Not mobile-ready, 6.2s load time. |
+| 4 - web correcta | Example Ltd | +34 91 ... | ok | Site works correctly. |
+| DESCARTAR | Example Chain | +34 91 ... | ok | Chain or franchise: decisions are not made locally. |
 
-Incluye además columnas de diagnóstico (código HTTP, tiempo de carga, HTTPS,
-adaptación a móvil) y un enlace de búsqueda para verificar cada caso dudoso.
+Plus diagnostic columns (HTTP status, load time, HTTPS, mobile viewport) and a
+prepared search link for every case needing manual confirmation.
 
-### Ejecución real: dentistas en el centro de Madrid
-
-| Resultado | Negocios |
-|---|---|
-| Analizados | 71 |
-| Web caída | 9 |
-| Sin web registrada (a verificar) | 29 |
-| Web mejorable | 2 |
-| Web correcta | 19 |
-| Cadenas descartadas | 12 |
+**Real run — dental clinics, central Madrid:** 71 analysed, 9 with dead websites,
+29 with no registered website, 2 improvable, 19 working, 12 chains discarded.
 
 ---
 
-## Cómo funciona por dentro
+## Design decisions
 
-Las decisiones de diseño que hacen que funcione en condiciones reales:
+**Tiled queries.** Overpass rejects expensive queries with a 504. The area is split
+into ~1.3 km tiles and requested one at a time.
 
-**Consultas troceadas.** Overpass es un servicio gratuito que descarta las
-consultas costosas con un error 504. En vez de pedir toda la zona de golpe, se
-parte en rectángulos de kilómetro y pico y se pide uno a uno.
+**Multiple servers with retries.** Three Overpass instances are tried in order. A
+fourth was dropped after testing showed it served only Swiss data — responding
+correctly, returning zero results.
 
-**Varios servidores con reintentos.** Se prueban tres instancias de Overpass en
-orden. Se descartó una cuarta al comprobar que solo servía datos de Suiza:
-respondía correctamente y devolvía cero resultados.
+**Network errors are exceptions, not status codes.** Catching timeouts is what
+stops one unreachable server from ending the whole run.
 
-**Errores de red controlados.** Un timeout es una excepción, no un código de
-estado. Capturarlo es lo que permite que un servidor caído no interrumpa la
-ejecución entera.
+**Two identities.** The script identifies itself honestly to the public API, and
+presents a browser user agent to commercial websites, many of which reject
+automated requests outright.
 
-**Dos identidades.** Ante la API pública el script se identifica como lo que es;
-ante las webs comerciales se presenta como un navegador, porque muchas rechazan
-peticiones automáticas.
+**Deduplication by type and id.** Grid tiles share edges, so businesses on a
+boundary appear twice. OpenStreetMap numbers nodes and ways independently, so
+node 123 and way 123 are different businesses — deduplication uses both fields.
 
-**Deduplicación por identificador.** Los cuadrados de la cuadrícula comparten
-bordes, así que un negocio en el límite aparece dos veces. Se elimina por
-`osm_id` y no por nombre, porque dos negocios distintos pueden llamarse igual.
-
-**Columnas honestas.** La ausencia de web en OpenStreetMap no demuestra que el
-negocio no tenga web, así que la columna se llama `sin web en OSM (verificar)` y
-no `sin web`. El programa cuenta además cuántos cuadrados fallaron y lo avisa,
-para que nunca se confunda una lista incompleta con una lista completa.
+**Honest column names.** The absence of a website in OpenStreetMap does not prove
+the business has none, so the column is called `sin web en OSM (verificar)`, not
+`sin web`. Failed tiles are counted and reported, so an incomplete list is never
+mistaken for a complete one.
 
 ---
 
-## Limitaciones conocidas
+## Known limitations
 
-- **Cobertura parcial.** OpenStreetMap lo mantienen voluntarios: faltan negocios
-  y algunos registros están desactualizados. Sirve para encontrar candidatos, no
-  como censo.
-- **"Sin web" no está verificado.** Solo significa que OpenStreetMap no tiene la
-  web registrada. Requiere comprobación manual, para lo que se incluye la columna
-  con el enlace de búsqueda.
-- **"Web caída" tiene un matiz.** Significa que el script no accede por tres vías
-  distintas. Algunos sitios bloquean peticiones automáticas y funcionan bien en un
-  navegador, así que conviene abrirlos antes de afirmarlo.
-- **El filtro de cadenas es una lista fija.** Reconoce las marcas incluidas; una
-  franquicia pequeña no la detecta.
-- **Depende de un servicio gratuito.** Si Overpass está saturado, la ejecución
-  puede quedar incompleta. El programa avisa cuando ocurre.
+- **OpenStreetMap coverage is partial** and skews towards city centres and
+  consumer-facing shops. Useful for finding candidates, not as a census. The
+  municipal registry is the better source where it exists.
+- **The registry covers Madrid only.** Other Spanish cities publish comparable
+  datasets in incompatible formats.
+- **The registry has no website or phone field.** Contact details still require a
+  separate lookup.
+- **Registry data lags reality.** Licence transfers and closures take time to
+  appear, so a premises may trade under a different name than the one registered.
+- **"Website down" needs confirmation.** The DNS check makes it reliable for
+  expired domains; sites that merely block automated requests need a browser.
+- **Chain filtering is a fixed list.** Known brands are detected; a small local
+  franchise is not.
 
 ---
 
-## Fuente de datos
+## Installation
 
-Datos de [OpenStreetMap](https://www.openstreetmap.org), obtenidos mediante la
-[API de Overpass](https://wiki.openstreetmap.org/wiki/Overpass_API). Disponibles
-bajo licencia [ODbL](https://opendatacommons.org/licenses/odbl/), que permite su
-uso citando la fuente.
+Python 3.9+.
 
-No se emplea scraping: toda la información se obtiene a través de APIs públicas
-destinadas a ese fin.
+```bash
+git clone https://github.com/Nacuca/<repo>.git
+cd <repo>
+pip install -r requirements.txt
+```
+
+For the registry tools, download the **Actividades** CSV from the Madrid open data
+portal and place it in the project folder.
+
+---
+
+## Data sources
+
+- [OpenStreetMap](https://www.openstreetmap.org) via the
+  [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), under
+  [ODbL](https://opendatacommons.org/licenses/odbl/).
+- [Censo de locales y actividades](https://datos.madrid.es/dataset/200085-0-censo-locales),
+  Madrid City Council open data portal, updated daily.
+
+No scraping is used. All data comes from public APIs and open data downloads
+intended for that purpose.
